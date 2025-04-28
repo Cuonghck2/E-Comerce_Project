@@ -14,6 +14,7 @@ const styleRoutes = require('./routes/style.routes');
 const discountRoutes = require('./routes/discount.routes');
 const productRoutes = require('./routes/product.routes');
 const warehouseRoutes = require('./routes/warehouse.routes');
+const paymentRoutes = require('./routes/payment.routes');
 
 const app = express();
 
@@ -56,6 +57,7 @@ app.get('/', (req, res) => {
 
 // Add this after other middleware
 app.use('/uploads', express.static('public/uploads'));
+app.use('/api/payments', paymentRoutes);
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   logger.info({

@@ -1,105 +1,136 @@
 const Payment = require('../models/payment.model');
-const crypto = require('crypto');
-const https = require('https');
+const Order = require('../models/order.model');
+const paypal = require('paypal-rest-sdk');
+const generateId = require('../utils/generateId');
 
-// MoMo credentials
-const partnerCode = "MOMOXXX"; // Replace with your MoMo Partner Code
-const accessKey = "YOUR_ACCESS_KEY";
-const secretKey = "YOUR_SECRET_KEY";
-const endpoint = "https://test-payment.momo.vn/v2/gateway/api/create";
-const redirectUrl = "http://localhost:3000/payment-success";
-const ipnUrl = "http://localhost:8080/api/payment/notify";
+// Configure PayPal
+paypal.configure({
+  mode: 'sandbox', // sandbox or live
+  client_id: process.env.PAYPAL_CLIENT_ID,
+  client_secret: process.env.PAYPAL_CLIENT_SECRET
+});
 
-exports.createPaymentUrl = async (req, res) => {
-  const { amount, orderInfo } = req.body;
+const paymentController = {
+  createPaypalPayment: async (req, res) => {
+    try {
+      const { orderId } = req.body;
+      const order = await Order.findOne({ idDonHang: orderId });
+      
+      if (!order) {
+        return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });
+      }
 
-  const requestId = Date.now().toString();
-  const orderId = requestId;
-  const requestType = "captureWallet";
-  const extraData = ""; // pass empty value if your merchant does not have extra data
+      const paymentData = {
+        intent: 'sale',
+        payer: {
+          payment_method: 'paypal'
+        },
+        redirect_urls: {
+          return_url: `http://localhost:8080/api/payments/success`,
+          cancel_url: `http://localhost:8080/api/payments/cancel`
+        },
+        transactions: [{
+          amount: {
+            total: (order.GioHang.TongTien).toString(),
+            currency: 'USD'
+          },
+          description: `Thanh toán cho đơn hàng ${orderId}`
+        }]
+      };
 
-  const rawSignature = "accessKey=" + accessKey + "&amount=" + amount + "&extraData=" + extraData + "&ipnUrl=" + ipnUrl + "&orderId=" + orderId + "&orderInfo=" + orderInfo + "&partnerCode=" + partnerCode + "&redirectUrl=" + redirectUrl + "&requestId=" + requestId + "&requestType=" + requestType;
+      paypal.payment.create(paymentData, async (error, payment) => {
+        if (error) {
+          throw error;
+        } else {
+          // Create payment record in database
+          const newPayment = new Payment({
+            idThanhToan: generateId('PAY'),
+            DonHang: {
+              idDonHang: orderId,
+              NguoiDung: {
+                id: order.NguoiDung.id,
+                HoTen: order.NguoiDung.HoTen,
+                Email: order.NguoiDung.Email,
+                SoDienThoai: order.NguoiDung.SoDienThoai
+              },
+              TongTien: order.GioHang.TongTien,
+              DiaChiGiaoHang: order.DiaChiGiaoHang
+            },
+            ThongTinThanhToan: {
+              SoTien: order.GioHang.TongTien,
+              PhuongThucThanhToan: 'paypal',
+              TrangThaiThanhToan: 'pending',
+              MaGiaoDich: payment.id
+            }
+          });
 
-  const signature = crypto
-    .createHmac('sha256', secretKey)
-    .update(rawSignature)
-    .digest('hex');
+          await newPayment.save();
 
-  const requestBody = {
-    partnerCode: partnerCode,
-    partnerName: "Test",
-    storeId: "MomoTestStore",
-    requestId: requestId,
-    amount: amount,
-    orderId: orderId,
-    orderInfo: orderInfo,
-    redirectUrl: redirectUrl,
-    ipnUrl: ipnUrl,
-    lang: "vi",
-    extraData: extraData,
-    requestType: requestType,
-    signature: signature
-  };
+          // Get approval URL
+          const approvalUrl = payment.links.find(link => link.rel === 'approval_url');
+          res.json({ approvalUrl: approvalUrl.href });
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  },
 
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody)
-    });
+  executePaypalPayment: async (req, res) => {
+    const payerId = req.query.PayerID;
+    const paymentId = req.query.paymentId;
 
-    const responseData = await response.json();
-    res.json(responseData);
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ message: 'Error creating MoMo payment' });
+    try {
+      const executePaymentJson = {
+        payer_id: payerId
+      };
+
+      paypal.payment.execute(paymentId, executePaymentJson, async (error, payment) => {
+        if (error) {
+          throw error;
+        } else {
+          // Update payment record
+          const paymentRecord = await Payment.findOne({
+            'ThongTinThanhToan.MaGiaoDich': paymentId
+          });
+
+          if (paymentRecord) {
+            paymentRecord.ThongTinThanhToan.TrangThaiThanhToan = 'completed';
+            paymentRecord.ThongTinThanhToan.NgayThanhToan = new Date();
+            await paymentRecord.save();
+
+            // Update order status
+            await Order.findOneAndUpdate(
+              { idDonHang: paymentRecord.DonHang.idDonHang },
+              { TrangThaiThanhToan: 'completed' }
+            );
+
+            res.redirect(`${process.env.FRONTEND_URL}/payment/success`);
+          } else {
+            throw new Error('Payment record not found');
+          }
+        }
+      });
+    } catch (error) {
+      res.redirect(`${process.env.FRONTEND_URL}/payment/error`);
+    }
+  },
+
+  cancelPayment: async (req, res) => {
+    res.redirect(`${process.env.FRONTEND_URL}/payment/cancel`);
+  },
+
+  getPaymentById: async (req, res) => {
+    try {
+      const payment = await Payment.findOne({ idThanhToan: req.params.id });
+      if (!payment) {
+        return res.status(404).json({ message: 'Không tìm thấy thanh toán' });
+      }
+      res.json(payment);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
   }
 };
 
-// Handle MoMo IPN (Instant Payment Notification)
-exports.handleNotification = async (req, res) => {
-  try {
-    const { 
-      partnerCode, 
-      orderId, 
-      requestId, 
-      amount, 
-      orderInfo, 
-      orderType, 
-      transId, 
-      resultCode, 
-      message, 
-      payType, 
-      responseTime, 
-      extraData, 
-      signature 
-    } = req.body;
-
-    // Verify signature
-    const rawSignature = "accessKey=" + accessKey + "&amount=" + amount + "&extraData=" + extraData + "&message=" + message + "&orderId=" + orderId + "&orderInfo=" + orderInfo + "&orderType=" + orderType + "&partnerCode=" + partnerCode + "&payType=" + payType + "&requestId=" + requestId + "&responseTime=" + responseTime + "&resultCode=" + resultCode + "&transId=" + transId;
-
-    const checkSignature = crypto
-      .createHmac('sha256', secretKey)
-      .update(rawSignature)
-      .digest('hex');
-
-    if (checkSignature !== signature) {
-      return res.status(400).json({ message: 'Invalid signature' });
-    }
-
-    // Process payment result
-    if (resultCode === 0) {
-      // Payment successful
-      // Update your database here
-      res.json({ message: 'Payment successful' });
-    } else {
-      // Payment failed
-      res.json({ message: 'Payment failed' });
-    }
-  } catch (error) {
-    console.error('Error processing IPN:', error);
-    res.status(500).json({ message: 'Error processing payment notification' });
-  }
-};
+module.exports = paymentController;
