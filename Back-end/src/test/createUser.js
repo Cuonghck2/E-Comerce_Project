@@ -20,11 +20,7 @@ mongoose.connect(process.env.MONGO_URI)
         id: generateUserId(),
         HoVaTen: 'Admin',
         NgaySinh: new Date('2003-01-01'),
-        DiaChi: {
-          TinhThanh: 'Hà Nội',
-          HuyenQuan: 'Bắc Từ Liêm',
-          XaPhuong: 'Cầu Diễn'
-        },
+        DiaChi: "Cầu Diễn, Hà Nội",
         DanhBaLienLac: '0978853470',
         ThuDienTu: 'maind18@gmail.com',
         SoDienThoai: '0978853470',
