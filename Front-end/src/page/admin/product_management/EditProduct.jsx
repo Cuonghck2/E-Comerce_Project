@@ -351,6 +351,7 @@ const EditProduct = () => {
                 label="Số lượng"
                 type="number"
                 value={formData.SoLuong}
+                InputLabelProps={{ shrink: true }}
                 onChange={(e) =>
                   setFormData({ ...formData, SoLuong: e.target.value })
                 }
