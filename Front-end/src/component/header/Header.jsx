@@ -77,7 +77,7 @@ const createDynamicMenu = (categories, productTypes) => {
 
   // Nhóm productTypes theo danh mục
   const groupedProducts = productTypes.reduce((acc, type) => {
-    const categoryId = type.DanhMucSanPham.id;
+    const categoryId = type.DanhMucSanPham?.id;
     if (!acc[categoryId]) {
       acc[categoryId] = [];
     }
@@ -233,7 +233,10 @@ const Header = () => {
     setActiveMenu(null);
   };
   const consolidatedCartItems = cartItems.reduce((acc, item) => {
-    const existingItem = acc.find(i => i.idSanPham === item.idSanPham);
+    const existingItem = acc.find(i => 
+      i.idSanPham === item.idSanPham && 
+      i.KichThuoc === item.KichThuoc 
+    );
     if (existingItem) {
       existingItem.quantity = (existingItem.quantity || 1) + 1;
     } else {

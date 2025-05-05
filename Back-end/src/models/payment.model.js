@@ -28,7 +28,7 @@ const paymentSchema = new mongoose.Schema({
     },
     PhuongThucThanhToan: {
       type: String,
-      enum: ['cash', 'credit_card', 'bank_transfer', 'e_wallet'],
+      enum: ['cash', 'credit_card', 'bank_transfer', 'e_wallet', 'paypal'],
       required: true
     },
     TrangThaiThanhToan: {

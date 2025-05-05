@@ -1,14 +1,18 @@
 const Payment = require('../models/payment.model');
 const Order = require('../models/order.model');
-const paypal = require('paypal-rest-sdk');
 const generateId = require('../utils/generateId');
+const { Client, Environment, OrdersController } = require('@paypal/paypal-server-sdk');
 
-// Configure PayPal
-paypal.configure({
-  mode: 'sandbox', // sandbox or live
-  client_id: process.env.PAYPAL_CLIENT_ID,
-  client_secret: process.env.PAYPAL_CLIENT_SECRET
+// Configure PayPal Client
+const client = new Client({
+  clientCredentialsAuthCredentials: {
+    oAuthClientId: process.env.PAYPAL_CLIENT_ID,
+    oAuthClientSecret: process.env.PAYPAL_CLIENT_SECRET,
+  },
+  environment: Environment.Sandbox
 });
+
+const ordersController = new OrdersController(client);
 
 const paymentController = {
   createPaypalPayment: async (req, res) => {
@@ -20,99 +24,114 @@ const paymentController = {
         return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });
       }
 
-      const paymentData = {
-        intent: 'sale',
-        payer: {
-          payment_method: 'paypal'
+      // Convert VND to USD (roughly 1 USD = 24,000 VND)
+      const amountInUSD = (order.GioHang.TongTien / 24000).toFixed(2);
+      const collect = {
+        body: {
+            intent: "CAPTURE",
+            purchaseUnits: [
+                {
+                    amount: {
+                        currencyCode: "USD",
+                        value: "100",
+                        breakdown: {
+                            itemTotal: {
+                                currencyCode: "USD",
+                                value: "100",
+                            },
+                        },
+                    },
+                    items: [
+                        {
+                            name: "T-Shirt",
+                            unitAmount: {
+                                currencyCode: "USD",
+                                value: "100",
+                            },
+                            quantity: "1",
+                            description: "Super Fresh Shirt",
+                            sku: "sku01",
+                        },
+                    ],
+                },
+            ],
         },
-        redirect_urls: {
-          return_url: `http://localhost:8080/api/payments/success`,
-          cancel_url: `http://localhost:8080/api/payments/cancel`
-        },
-        transactions: [{
-          amount: {
-            total: (order.GioHang.TongTien).toString(),
-            currency: 'USD'
+        prefer: "return=minimal",
+    };
+
+      const { body, statusCode } = await ordersController.createOrder(collect);
+      const paypalResponse = JSON.parse(body);
+
+      // Create payment record
+      const newPayment = new Payment({
+        idThanhToan: generateId('PAY'),
+        DonHang: {
+          idDonHang: orderId,
+          NguoiDung: {
+            id: order.NguoiDung.id,
+            HoTen: order.NguoiDung.HoTen,
+            Email: order.NguoiDung.Email,
+            SoDienThoai: order.NguoiDung.SoDienThoai
           },
-          description: `Thanh toán cho đơn hàng ${orderId}`
-        }]
-      };
-
-      paypal.payment.create(paymentData, async (error, payment) => {
-        if (error) {
-          throw error;
-        } else {
-          // Create payment record in database
-          const newPayment = new Payment({
-            idThanhToan: generateId('PAY'),
-            DonHang: {
-              idDonHang: orderId,
-              NguoiDung: {
-                id: order.NguoiDung.id,
-                HoTen: order.NguoiDung.HoTen,
-                Email: order.NguoiDung.Email,
-                SoDienThoai: order.NguoiDung.SoDienThoai
-              },
-              TongTien: order.GioHang.TongTien,
-              DiaChiGiaoHang: order.DiaChiGiaoHang
-            },
-            ThongTinThanhToan: {
-              SoTien: order.GioHang.TongTien,
-              PhuongThucThanhToan: 'paypal',
-              TrangThaiThanhToan: 'pending',
-              MaGiaoDich: payment.id
-            }
-          });
-
-          await newPayment.save();
-
-          // Get approval URL
-          const approvalUrl = payment.links.find(link => link.rel === 'approval_url');
-          res.json({ approvalUrl: approvalUrl.href });
+          TongTien: order.GioHang.TongTien,
+          DiaChiGiaoHang: order.DiaChiGiaoHang
+        },
+        ThongTinThanhToan: {
+          SoTien: order.GioHang.TongTien,
+          PhuongThucThanhToan: 'paypal',
+          TrangThaiThanhToan: 'pending',
+          MaGiaoDich: paypalResponse.id
         }
       });
+
+      await newPayment.save();
+
+      res.status(statusCode).json({
+        orderId: paypalResponse.id,
+        approvalUrl: paypalResponse.links.find(link => link.rel === 'approve').href
+      });
+
     } catch (error) {
+      console.error('PayPal create order error:', error);
       res.status(500).json({ message: error.message });
     }
   },
 
-  executePaypalPayment: async (req, res) => {
-    const payerId = req.query.PayerID;
-    const paymentId = req.query.paymentId;
-
+  capturePaypalPayment: async (req, res) => {
     try {
-      const executePaymentJson = {
-        payer_id: payerId
+      const { orderID } = req.params;
+      
+      const capture = {
+        id: orderID,
+        prefer: "return=minimal"
       };
 
-      paypal.payment.execute(paymentId, executePaymentJson, async (error, payment) => {
-        if (error) {
-          throw error;
-        } else {
-          // Update payment record
-          const paymentRecord = await Payment.findOne({
-            'ThongTinThanhToan.MaGiaoDich': paymentId
-          });
+      const { body, statusCode } = await ordersController.captureOrder(capture);
+      const captureResponse = JSON.parse(body);
 
-          if (paymentRecord) {
-            paymentRecord.ThongTinThanhToan.TrangThaiThanhToan = 'completed';
-            paymentRecord.ThongTinThanhToan.NgayThanhToan = new Date();
-            await paymentRecord.save();
+      if (captureResponse.status === 'COMPLETED') {
+        // Update payment record
+        const paymentRecord = await Payment.findOne({
+          'ThongTinThanhToan.MaGiaoDich': orderID
+        });
 
-            // Update order status
-            await Order.findOneAndUpdate(
-              { idDonHang: paymentRecord.DonHang.idDonHang },
-              { TrangThaiThanhToan: 'completed' }
-            );
+        if (paymentRecord) {
+          paymentRecord.ThongTinThanhToan.TrangThaiThanhToan = 'completed';
+          paymentRecord.ThongTinThanhToan.NgayThanhToan = new Date();
+          await paymentRecord.save();
 
-            res.redirect(`${process.env.FRONTEND_URL}/payment/success`);
-          } else {
-            throw new Error('Payment record not found');
-          }
+          // Update order status
+          await Order.findOneAndUpdate(
+            { idDonHang: paymentRecord.DonHang.idDonHang },
+            { TrangThaiThanhToan: 'completed' }
+          );
         }
-      });
+      }
+
+      res.status(statusCode).json(captureResponse);
     } catch (error) {
-      res.redirect(`${process.env.FRONTEND_URL}/payment/error`);
+      console.error('PayPal capture error:', error);
+      res.status(500).json({ message: error.message });
     }
   },
 
