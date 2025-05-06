@@ -17,7 +17,9 @@ const ordersController = new OrdersController(client);
 const paymentController = {
   createPaypalPayment: async (req, res) => {
     try {
-      const { orderId } = req.body;
+      console.log('Request body:', req);
+      const { orderId,amount } = req.body;
+      // console.log('Order ID:', orderId);
       const order = await Order.findOne({ idDonHang: orderId });
       
       if (!order) {
@@ -33,26 +35,24 @@ const paymentController = {
                 {
                     amount: {
                         currencyCode: "USD",
-                        value: "100",
+                        value: amountInUSD,
                         breakdown: {
                             itemTotal: {
                                 currencyCode: "USD",
-                                value: "100",
+                                value: amountInUSD,
                             },
                         },
                     },
-                    items: [
-                        {
-                            name: "T-Shirt",
-                            unitAmount: {
-                                currencyCode: "USD",
-                                value: "100",
-                            },
-                            quantity: "1",
-                            description: "Super Fresh Shirt",
-                            sku: "sku01",
+                    items: order.GioHang.DanhSachSanPham.map(item => ({
+                        name: item.TenSanPham,
+                        unitAmount: {
+                            currencyCode: "USD",
+                            value: (item.GiaTien / 24000).toFixed(2)
                         },
-                    ],
+                        quantity: item.SoLuong.toString(),
+                        description: `${item.MauSac} - ${item.KichThuoc}`,
+                        sku: item.idSanPham
+                    }))
                 },
             ],
         },

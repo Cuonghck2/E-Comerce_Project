@@ -57,10 +57,17 @@ export const updateOrderStatus = createAsyncThunk(
   'orders/updateStatus',
   async ({ orderId, TrangThaiDonHang }, { rejectWithValue }) => {
     try {
+      const token = localStorage.getItem('adminToken');
+      const user = JSON.parse(localStorage.getItem('user'));  
       const response = await axios.patch(
         `${BASE_URL}/orders/${orderId}/status`, 
-        { TrangThaiDonHang },
-        getAuthHeader()
+        { TrangThaiDonHang,user }, // Request body
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }
       );
       return response.data;
     } catch (error) {

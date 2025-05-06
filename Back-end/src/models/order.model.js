@@ -55,7 +55,7 @@ const orderSchema = new mongoose.Schema({
   },
   PhuongThucThanhToan: {
     type: String,
-    enum: ["cash", "credit_card", "bank_transfer", "e_wallet"],
+    enum: ['cod','cash', 'credit_card', 'bank_transfer', 'e_wallet', 'paypal'],
   },
   TrangThaiDonHang: {
     type: String,

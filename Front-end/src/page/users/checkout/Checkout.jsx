@@ -1,4 +1,3 @@
-
 import {
   Box,
   Typography,
@@ -26,29 +25,33 @@ import { useAuth } from "../../../hooks/useAuth";
 import { toast, ToastContainer } from "react-toastify";
 import { useOrder } from "../../../hooks/useOrder";
 import { useDiscount } from "../../../hooks/useDiscount";
+import PaymentMethods from "./PaymentMethods";
+import { fetchData } from "../../../config/axios";
+import PaypalCheckout from "./PaypalCheckout";
 
 const Checkout = () => {
   const navigate = useNavigate();
   const {
     handleFetchCart,
     cartItems,
-    handleClearCart // Add this
+    handleClearCart, // Add this
   } = useCart();
   const { handleFetchDiscounts, discounts } = useDiscount();
 
-  const { user,getUser } = useAuth();
- const {handleCreateOrder} = useOrder()
+  const { user, getUser } = useAuth();
+  const { handleCreateOrder } = useOrder();
   const [formData, setFormData] = useState({
     name: user?.HoVaTen || "",
     phone: user?.SoDienThoai || "",
     email: user?.ThuDienTu || "",
     address: user?.DiaChi || "",
   });
- 
+
   const [openVoucher, setOpenVoucher] = useState(false);
   const [selectedVoucher, setSelectedVoucher] = useState(null);
   const [discountAmount, setDiscountAmount] = useState(0);
-
+const [showPaypal, setShowPaypal] = useState(false);
+const [paypalOrderDetails, setPaypalOrderDetails] = useState(null);
   const consolidatedCartItems = cartItems.reduce((acc, item) => {
     const existingItem = acc.find((i) => i.idSanPham === item.idSanPham);
     if (existingItem) {
@@ -60,9 +63,9 @@ const Checkout = () => {
   }, []);
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
+    setFormData((prev) => ({
       ...prev,
-      [name]: value
+      [name]: value,
     }));
   };
   const handleVoucherOpen = () => setOpenVoucher(true);
@@ -76,21 +79,25 @@ const Checkout = () => {
   };
 
   useEffect(() => {
-    getUser()
+    getUser();
     handleFetchCart();
-    handleFetchDiscounts()
+    handleFetchDiscounts();
   }, []);
   const totalAmount = consolidatedCartItems.reduce((sum, item) => {
     return sum + item.GiaTien * item.quantity;
   }, 0);
+  // Add this state near other useState declarations
+  const [paymentMethod, setPaymentMethod] = useState("cod");
+
+  // Modify handlePlaceOrder to include payment method
   const handlePlaceOrder = async () => {
     if (!user) {
       toast.warning("Vui lòng đăng nhập để tiến hành đặt hàng", {
-        autoClose: 3000, 
+        autoClose: 3000,
       });
       setTimeout(() => {
         navigate("/auth/user/login");
-      }, 3000); 
+      }, 3000);
       return;
     }
     if (consolidatedCartItems.length === 0) {
@@ -116,26 +123,44 @@ const Checkout = () => {
           TongTienHang: totalAmount,
           GiamGia: discountAmount,
           TamTinh: totalAmount - discountAmount,
-          TongTien: totalAmount - discountAmount
+          TongTien: totalAmount - discountAmount,
         },
         TrangThaiDonHang: "pending",
-        PhuongThucThanhToan: "cash", 
-        DiaChiGiaoHang: user.DiaChi || "", 
-        GhiChu: "" 
+        PhuongThucThanhToan: paymentMethod,
+        DiaChiGiaoHang: formData.address,
+        GhiChu: formData.note,
       };
-      const result = await handleCreateOrder(orderData);
-  
-      if (result) {
-        await handleClearCart(); // Add this line to clear cart
-        toast.success("Đặt hàng thành công!", {
-          autoClose: 2000,
-        });
-        setTimeout(() => {
-          navigate("/user/order");
-        }, 2000);
+
+      
+      
+      // Modify the PayPal section in handlePlaceOrder
+      if (paymentMethod === "paypal") {
+        const order = await handleCreateOrder(orderData);
+        if (order) {
+          console.log("PayPal order created:", order);
+          setPaypalOrderDetails({
+            orderId: order.order.idDonHang,
+            amount: totalAmount - discountAmount,
+          });
+          setShowPaypal(true);
+        }
+      } else {
+        const result = await handleCreateOrder(orderData);
+        if (result) {
+          await handleClearCart();
+          toast.success("Đặt hàng thành công!", {
+            autoClose: 2000,
+          });
+          setTimeout(() => {
+            navigate("/user/order");
+          }, 2000);
+        }
       }
     } catch (error) {
-      console.error("Error creating order:", error);
+      console.error("Error in order process:", error);
+      toast.error("Có lỗi xảy ra khi xử lý đơn hàng", {
+        autoClose: 3000,
+      });
     }
   };
 
@@ -204,6 +229,10 @@ const Checkout = () => {
               </Grid>
             </form>
           </Paper>
+          <PaymentMethods
+            value={paymentMethod}
+            onChange={(e) => setPaymentMethod(e.target.value)}
+          />
         </Grid>
 
         {/* Right Column - Order Summary */}
@@ -324,7 +353,8 @@ const Checkout = () => {
               >
                 <Typography>Giảm giá</Typography>
                 <Typography>
-                  -{new Intl.NumberFormat("vi-VN", {
+                  -
+                  {new Intl.NumberFormat("vi-VN", {
                     style: "currency",
                     currency: "VND",
                   }).format(discountAmount)}
@@ -387,6 +417,38 @@ const Checkout = () => {
           </Paper>
         </Grid>
       </Grid>
+      {showPaypal ? (
+      <PaypalCheckout
+        orderDetails={{
+          amount: totalAmount - discountAmount,
+          subtotal: totalAmount,
+          discount: discountAmount,
+          products: consolidatedCartItems,
+          shippingAddress: formData.address,
+          customerName: formData.name,
+          customerPhone: formData.phone,
+          customerEmail: formData.email
+        }}
+        open={showPaypal}
+        onClose={() => setShowPaypal(false)}
+        onSuccess={async (paypalOrder) => {
+          await handleClearCart();
+          navigate("/payment-success");
+        }}
+        onError={(error) => {
+          console.error("Payment error:", error);
+          toast.error("Thanh toán thất bại. Vui lòng thử lại.");
+          setShowPaypal(false);
+        }}
+        onCancel={() => {
+          toast.info("Đã hủy thanh toán");
+          setShowPaypal(false);
+        }}
+      />
+    ) : (
+      <>
+      </>
+    )}
       <ToastContainer />
       <Dialog
         open={openVoucher}
@@ -494,7 +556,9 @@ const Checkout = () => {
                       Hiệu lực:{" "}
                       {new Date(voucher.NgayBatDau).toLocaleDateString("vi-VN")}{" "}
                       -{" "}
-                      {new Date(voucher.NgayKetThuc).toLocaleDateString("vi-VN")}
+                      {new Date(voucher.NgayKetThuc).toLocaleDateString(
+                        "vi-VN"
+                      )}
                     </Typography>
                   </Box>
                 }
